@@ -124,3 +124,11 @@ revoke all on function public.apt_join_class(text, text) from public, anon;
 revoke all on function public.apt_create_class(text) from public, anon;
 grant execute on function public.apt_join_class(text, text) to authenticated;
 grant execute on function public.apt_create_class(text) to authenticated;
+
+-- ---------- クラスのテスト（先生が全員に同時に出すテスト）2026-11-16 ----------
+-- test     = 実施中のテスト { id, subject, seed, n, at, end }（null = なし）
+-- test_log = これまでのテスト（新しい順、最大 30）
+alter table public.apt_classes add column if not exists test jsonb;
+alter table public.apt_classes add column if not exists test_log jsonb check (test_log is null or jsonb_typeof(test_log) = 'array');
+alter table public.apt_attempts drop constraint if exists apt_attempts_mode_check;
+alter table public.apt_attempts add constraint apt_attempts_mode_check check (mode in ('practice', 'mock', 'test'));

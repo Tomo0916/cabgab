@@ -31,6 +31,10 @@ export async function leaveClass(classId) {
   const sb = await client(); const { data } = await sb.auth.getSession();
   if (data.session) await sb.from('apt_members').delete().eq('class_id', classId).eq('user_id', data.session.user.id);
 }
+/** the parts of the class a student's page follows (the class test) */
+export async function classRow(classId) { const sb = await client(); return check(await sb.from('apt_classes').select('id, name, open, test').eq('id', classId).maybeSingle()); }
+/** the server's time, so the teacher's start time is the same for everyone */
+export async function serverNow() { const sb = await client(); try { return new Date(check(await sb.rpc('server_now'))).getTime(); } catch (e) { return Date.now(); } }
 /* answers wait in a queue (kept in this browser) until they are sent */
 const QKEY = 'apt.queue';
 const loadQ = () => { try { return JSON.parse(localStorage.getItem(QKEY) || '[]'); } catch (e) { return []; } };
