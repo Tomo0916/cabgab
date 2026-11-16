@@ -67,7 +67,7 @@ export function calcProblem(seed) {
       : op === '-' ? (side === 'left' ? `□ = ${fmt(lhs)} + ${fmt(a)}` : `□ = ${fmt(a)} − ${fmt(lhs)}`)
       : op === '×' ? `□ = ${fmt(lhs)} ÷ ${fmt(a)}`
       : (side === 'left' ? `□ = ${fmt(lhs)} × ${fmt(a)}` : `□ = ${fmt(a)} ÷ ${fmt(lhs)}`);
-    return { id: `calc:${seed}`, subject: 'calc', prompt: `${left} = ${rhs}`, choices: m.choices, answer: m.answer,
+    return { id: `calc:${seed}`, subject: 'calc', prompt: `${left} = ${rhs}`, rhsValue: fmt(lhs), how, x: fmt(x), choices: m.choices, answer: m.answer,
       explain: `右辺を先に計算すると ${fmt(lhs)}。${how} = ${fmt(x)}。` + (inv ? '' : '') };
   }
   throw new Error('calc: no problem');
@@ -95,7 +95,7 @@ export function ruleProblem(seed) {
     const m = mix(R, right, R.shuffle(variants));
     if (!m) continue;
     const dir = d => (d === 0 ? '動かない' : `${d > 0 ? '時計回り' : '反時計回り'}に ${Math.abs(d)} つずつ進む`);
-    return { id: `rule:${seed}`, subject: 'rule', prompt: '?に入る図形はどれ？', seq, blank, choices: m.choices, answer: m.answer,
+    return { id: `rule:${seed}`, subject: 'rule', prompt: '?に入る図形はどれ？', seq, blank, da, db, fillRule, choices: m.choices, answer: m.answer,
       explain: `●は${dir(da)}。△は${dir(db)}。真ん中は${fillRule === 'alt' ? '塗りと白が交互' : 'ずっと同じ'}。` };
   }
   throw new Error('rule: no problem');
@@ -144,7 +144,7 @@ export function tableProblem(seed) {
     const m = mix(R, out, rowWrongs(R, row, ops, keys), rowKey);
     if (!m) continue;
     const marks = ops.map(k => table.find(x => x.op === k).mark);
-    return { id: `table:${seed}`, subject: 'table', prompt: `命令 ${marks.join(' → ')} の順に実行した結果はどれ？`, table, row, marks, choices: m.choices, answer: m.answer,
+    return { id: `table:${seed}`, subject: 'table', prompt: `命令 ${marks.join(' → ')} の順に実行した結果はどれ？`, table, row, marks, ops, choices: m.choices, answer: m.answer,
       explain: marks.map((mk, i) => `${mk}：${ROW_OPS[ops[i]].name}`).join(' → ') };
   }
   throw new Error('table: no problem');
@@ -167,7 +167,7 @@ export function cipherProblem(seed) {
     const m = mix(R, out, rowWrongs(R, row, order.map(i => ops[i]), OP_KEYS), rowKey);
     if (!m) continue;
     return { id: `cipher:${seed}`, subject: 'cipher', prompt: `例を見て記号の意味を考え、${order.map(i => glyphs[i]).join(' → ')} の結果を選んでください。`,
-      examples: ex.map(e => ({ row: e.row, marks: e.g.map(i => glyphs[i]), out: e.out })), row, marks: order.map(i => glyphs[i]), choices: m.choices, answer: m.answer,
+      examples: ex.map(e => ({ row: e.row, marks: e.g.map(i => glyphs[i]), out: e.out })), row, marks: order.map(i => glyphs[i]), ops: order.map(i => ops[i]), meaning: glyphs.map((g, i) => ({ g, op: ops[i] })), choices: m.choices, answer: m.answer,
       explain: [0, 1, 2].map(i => `${glyphs[i]}：${ROW_OPS[ops[i]].name}`).join('、') + '。' };
   }
   throw new Error('cipher: no problem');
@@ -175,3 +175,6 @@ export function cipherProblem(seed) {
 
 export const MAKE = { calc: calcProblem, rule: ruleProblem, table: tableProblem, cipher: cipherProblem };
 export const makeProblem = (subject, seed) => MAKE[subject](seed);
+/** a problem from its id (subject:seed) — for the review of wrong answers and the class test */
+export const problemById = id => { const i = id.indexOf(':'); return makeProblem(id.slice(0, i), id.slice(i + 1)); };
+export { apply as applyOps, rowKey };

@@ -8,7 +8,7 @@ import * as backend from './backend.js';
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const S = { session: null, ok: false, classes: [], klass: null, members: [], att: [], period: 'all', loading: false, msg: '' };
+const S = { session: null, ok: false, classes: [], klass: null, members: [], att: [], period: 'all', loading: false, msg: '', draft: { subject: 'calc', n: 10, min: 3 }, openTest: null };
 const fmtTime = iso => { const d = new Date(iso); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 const since = () => { const d = new Date(); if (S.period === 'today') { d.setHours(0, 0, 0, 0); return d.getTime(); } if (S.period === 'week') return Date.now() - 7 * 86400000; return 0; };
 
@@ -23,7 +23,39 @@ function mocksOf(rows) {
   rows.filter(r => r.mode === 'mock').forEach(r => { const k = `${r.user_id}|${r.run}`, m = by.get(k) || { user_id: r.user_id, subject: r.subject, score: 0, answered: 0, at: r.created_at }; m.answered++; if (r.ok) m.score++; if (r.created_at > m.at) m.at = r.created_at; by.set(k, m); });
   return [...by.values()];
 }
-const pctHTML = (st, subj) => (st.n ? `<span class="pct" style="--sc:var(--c-${subj})"><i><b style="width:${Math.round(st.rate * 100)}%"></b></i>${Math.round(st.rate * 100)}%<small class="muted">（${st.n}）</small></span>` : '<span class="muted">—</span>');
+const pctHTML = (st, subj) => (st.n ? `<span class="pct ${st.n >= 5 && st.rate < 0.5 ? 'low' : ''}" style="--sc:var(--c-${subj})"><i><b style="width:${Math.round(st.rate * 100)}%"></b></i>${Math.round(st.rate * 100)}%<small class="muted">（${st.n}）</small></span>` : '<span class="muted">—</span>');
+
+/* ---------- the class test: everyone at once ---------- */
+const TEST_N = [5, 10, 20, 30], TEST_MIN = [2, 3, 5, 10, 15];
+const mmss = ms => { const s = Math.max(0, Math.round(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+/** each student's result in a test → [{ m, answered, ok, done }] */
+function testRows(t) {
+  const rows = S.att.filter(r => r.mode === 'test' && r.run === t.id);
+  return S.members.map(m => { const mine = rows.filter(r => r.user_id === m.user_id); return { m, answered: mine.length, ok: mine.filter(r => r.ok).length }; });
+}
+function testPanelHTML(c) {
+  const t = c.test, live = t && Date.now() < new Date(t.end).getTime();
+  if (live) {
+    const rs = testRows(t), started = rs.filter(r => r.answered).length, finished = rs.filter(r => r.answered >= t.n).length;
+    return `<section class="card test-live"><div class="t-head"><h2>📝 実施中：${SUBJECT_NAME[t.subject]}・${t.n}問</h2><span class="clock" id="tclock" data-end="${t.end}">${mmss(new Date(t.end) - Date.now())}</span><button class="btn small" data-act="testStop">終了する</button></div>
+      <div class="classbar"><i class="done" style="width:${S.members.length ? finished / S.members.length * 100 : 0}%"></i><i class="going" style="width:${S.members.length ? (started - finished) / S.members.length * 100 : 0}%"></i></div>
+      <p class="muted small">全部答えた ${finished} 人・解いている ${started - finished} 人・まだ ${S.members.length - started} 人（5 秒ごとに更新）</p>
+      <ul class="roster">${rs.map(r => `<li class="${r.answered >= t.n ? 'done' : r.answered ? 'going' : 'none'}" title="${esc(r.m.nickname)}"><b>${esc(r.m.nickname)}</b><span>${r.answered}/${t.n}<small>（正解 ${r.ok}）</small></span><i style="width:${r.answered / t.n * 100}%"></i></li>`).join('')}</ul></section>`;
+  }
+  const d = S.draft, seg = (k, vals, label) => `<span class="seg">${vals.map(v => `<button class="${d[k] === v ? 'on' : ''}" data-act="draft" data-k="${k}" data-v="${v}">${label(v)}</button>`).join('')}</span>`;
+  return `<section class="card test-setup"><h2>📝 クラスのテスト</h2><p class="muted small">全員に同じ問題を同時に出します。生徒の画面は 5 秒以内にテストに切りかわり、時間になると自動で終わります。</p>
+    <div class="t-row"><span class="lbl">科目</span>${seg('subject', SUBJECTS, v => SUBJECT_NAME[v])}</div>
+    <div class="t-row"><span class="lbl">問題数</span>${seg('n', TEST_N, v => `${v}問`)}</div>
+    <div class="t-row"><span class="lbl">時間</span>${seg('min', TEST_MIN, v => `${v}分`)}<span class="muted small">（模試の目安なら ${Math.max(1, Math.round(MOCK[d.subject].sec / MOCK[d.subject].n * d.n / 60))} 分）</span></div>
+    <button class="btn primary" data-act="testStart">テストを始める</button></section>`;
+}
+function testLogHTML(c) {
+  const log = (c.test_log || []).filter(t => !(c.test && c.test.id === t.id && Date.now() < new Date(t.end).getTime()));
+  if (!log.length) return '';
+  return `<section class="card" style="margin-top:14px"><h2 style="margin:0 0 8px;font-size:1.05rem">これまでのクラスのテスト</h2>${log.map(t => { const rs = testRows(t).filter(r => r.answered), avg = rs.length ? rs.reduce((a, r) => a + r.ok, 0) / rs.length : 0;
+    return `<details class="tlog" ${S.openTest === t.id ? 'open' : ''}><summary><b>${fmtTime(t.at)}</b><span>${SUBJECT_NAME[t.subject]}・${t.n}問</span><span class="muted">${rs.length} 人・平均 ${avg.toFixed(1)} 点</span></summary>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>名前</th><th>正解</th><th>答えた数</th></tr></thead><tbody>${testRows(t).sort((a, b) => b.ok - a.ok).map(r => `<tr><td>${esc(r.m.nickname)}</td><td><b>${r.ok}</b> / ${t.n}</td><td>${r.answered || '<span class="muted">受けていない</span>'}</td></tr>`).join('')}</tbody></table></div></details>`; }).join('')}</section>`;
+}
 
 /* ---------- screens ---------- */
 function loginHTML() {
@@ -49,6 +81,7 @@ function classHTML() {
       <td class="muted">${last ? fmtTime(last) : '—'}</td><td><button class="btn small" data-act="remove" data-u="${m.user_id}">外す</button></td></tr>`; }).join('');
   return `<main class="wrap"><div class="t-head"><a class="btn small" href="#/">← クラス一覧</a><h1>${esc(c.name)}</h1><span>クラスコード <span class="code">${esc(c.code)}</span></span></div>
     <div class="t-head"><span class="muted">参加</span><button class="btn small" data-act="open">${c.open ? '受付中（止める）' : '停止中（再開する）'}</button>${seg}<button class="btn small" data-act="reload">${S.loading ? '更新中…' : '更新'}</button><button class="btn small" data-act="csv">CSV で保存</button></div>
+    ${testPanelHTML(c)}
     <section class="tiles">${tiles}</section>
     <section class="card"><h2 style="margin:0 0 8px;font-size:1.05rem">生徒ごとの結果（${S.members.length} 人）</h2>
       <div class="tbl-wrap"><table class="tbl"><thead><tr><th rowspan="2">名前</th>${SUBJECTS.map(s => `<th colspan="3" style="color:var(--c-${s})">${SUBJECT_NAME[s]}</th>`).join('')}<th rowspan="2">最後に解いた日時</th><th rowspan="2"></th></tr>
@@ -56,7 +89,8 @@ function classHTML() {
         <tbody>${body || `<tr><td colspan="15" class="muted">まだ生徒がいません。生徒にクラスコード <b>${esc(c.code)}</b> を伝えてください。</td></tr>`}</tbody></table></div></section>
     <section class="card" style="margin-top:14px"><h2 style="margin:0 0 8px;font-size:1.05rem">模試の記録</h2>
       ${mocks.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>日時</th><th>名前</th><th>科目</th><th>正解</th><th>答えた数</th></tr></thead><tbody>${mocks.sort((a, b) => (a.at < b.at ? 1 : -1)).map(x => `<tr><td>${fmtTime(x.at)}</td><td>${esc((S.members.find(m => m.user_id === x.user_id) || {}).nickname || '（抜けた生徒）')}</td><td>${SUBJECT_NAME[x.subject]}</td><td><b>${x.score}</b> / ${MOCK[x.subject].n}</td><td>${x.answered}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">この期間の模試はありません。</p>'}</section>
-    <div class="t-head" style="margin-top:20px"><button class="btn small" data-act="clear">解答の記録をすべて消す</button><button class="btn small" data-act="delete">クラスを削除</button></div>
+    ${testLogHTML(c)}
+    <div class="t-head" style="margin-top:20px"><a class="btn small" href="../#/print/calc" target="_blank" rel="noopener">印刷用テストを作る</a><button class="btn small" data-act="clear">解答の記録をすべて消す</button><button class="btn small" data-act="delete">クラスを削除</button></div>
     <p class="err">${esc(S.msg)}</p></main>`;
 }
 function render() {
@@ -82,7 +116,14 @@ async function route() {
   }
   S.klass = null; S.classes = await backend.myClasses().catch(() => []); render();
 }
-setInterval(() => { if (S.klass && !document.hidden && !S.loading) loadClass(S.klass.id); }, 30000);   // the numbers keep up during a lesson
+let tick = 0;
+setInterval(() => {   // the numbers keep up during a lesson: every 5 seconds while a test runs, otherwise every 30
+  const c = S.klass; if (!c || document.hidden || S.loading) return;
+  const live = c.test && Date.now() < new Date(c.test.end).getTime(), el = $('#tclock');
+  if (el) el.textContent = mmss(new Date(el.dataset.end) - Date.now());
+  if (c.test && !live && el) render();   // the time is over
+  tick++; if (live ? tick % 5 === 0 : tick % 30 === 0) loadClass(c.id);
+}, 1000);
 
 /* ---------- actions ---------- */
 function csv() {
@@ -101,6 +142,17 @@ document.addEventListener('click', async e => {
   try {
     if (act === 'logout') { await backend.signOut(); S.session = null; S.ok = false; location.hash = '#/'; render(); }
     else if (act === 'period') { S.period = el.dataset.v; render(); }
+    else if (act === 'draft') { const k = el.dataset.k; S.draft[k] = k === 'subject' ? el.dataset.v : +el.dataset.v; render(); }
+    else if (act === 'testStart') {
+      const now = await backend.serverNow(), d = S.draft, at = now + 3000;
+      const t = { id: Math.random().toString(36).slice(2, 10), subject: d.subject, seed: Math.random().toString(36).slice(2, 8), n: d.n, at: new Date(at).toISOString(), end: new Date(at + d.min * 60000).toISOString() };
+      S.klass = await backend.updateClass(c.id, { test: t, test_log: [t, ...(c.test_log || [])].slice(0, 30) }); S.classes = S.classes.map(x => (x.id === c.id ? S.klass : x)); render();
+    }
+    else if (act === 'testStop') {
+      if (!confirm('テストを終了しますか？生徒の画面もその場で終わります。')) return;
+      const t = c.test, done = Object.assign({}, t, { end: new Date().toISOString() });
+      S.klass = await backend.updateClass(c.id, { test: done, test_log: (c.test_log || []).map(x => (x.id === t.id ? done : x)) }); S.openTest = t.id; S.classes = S.classes.map(x => (x.id === c.id ? S.klass : x)); loadClass(c.id);
+    }
     else if (act === 'reload') loadClass(c.id);
     else if (act === 'csv') csv();
     else if (act === 'open') { S.klass = await backend.updateClass(c.id, { open: !c.open }); S.classes = S.classes.map(x => (x.id === c.id ? S.klass : x)); render(); }

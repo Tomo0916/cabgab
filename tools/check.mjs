@@ -21,5 +21,11 @@ for (const s of SUBJECTS) {
   console.log(`   ${s}: ${n} problems, ${ids.size} different, ${Date.now() - t0} ms`);
   if (ids.size < n * 0.9) err(`${s}: too many problems are the same`);
 }
+// a problem can be made again from its id (the review of wrong answers, the class test)
+const { problemById } = await import('../js/gen.js');
+for (const s2 of SUBJECTS) { const p = makeProblem(s2, 'again|7'); if (key(problemById(p.id)) !== key(p)) err(`${s2}: a problem cannot be made again from its id`); }
+// the worked examples (解き方) end at the right answer
+const { learnHTML } = await import('../js/learn.js');
+for (const s2 of SUBJECTS) for (let i = 0; i < 30; i++) { try { const h = learnHTML(s2, `L${i}`); if (!h.includes('答え')) err(`learn ${s2}: no answer step`); } catch (e) { err(`learn ${s2} ${i}: ${e.message}`); } }
 console.log(errors ? `\n✗ ${errors} error(s)` : '\n✓ 0 error(s)');
 process.exit(errors ? 1 : 0);
