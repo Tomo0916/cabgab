@@ -8,26 +8,21 @@
  *   #/print/<subj>     a paper test (problems and an answer page)
  *   #/ctest            the test the teacher started for the class
  * ========================================================= */
-import { SUBJECTS, SUBJECT_NAME, MOCK, makeProblem, problemById, ROW_OPS } from './gen.js';
+import { SUBJECTS, MOCK, makeProblem, problemById } from './gen.js';
 import { rowHTML, ruleFigSVG, blankFigHTML } from './figures.js';
 import { learnHTML } from './learn.js';
+import { T, H, HX, esc, setLang, detectLang, lang, langSelectHTML } from './i18n.js';
+import { subjName, subjNameH, opNameH, askHTML, explainHTML } from './text.js';
 import * as backend from './backend.js';
 
 const $ = s => document.querySelector(s);
-const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const store = {
   get: (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
   set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* private mode */ } }
 };
 const PRACTICE_N = 10;
-const DESC = {
-  calc: '式の □ に入る数を選びます。右辺を先に計算して、逆算します。',
-  rule: '5 つの図形がある規則で並んでいます。? に入る図形を選びます。',
-  table: '命令の表を見ながら、図形の並びに命令を順に当てはめます。',
-  cipher: '例から記号の意味（命令）を読み取り、新しい並びに当てはめます。'
-};
 const ICON = { calc: '±', rule: '◳', table: '⇄', cipher: '♠' };
-const MODE_NAME = { practice: '練習', mock: '模試', review: '間違い直し', test: 'クラスのテスト' };
+const modeH = m => H(`mode.${m}`);
 
 /* ---------- state ---------- */
 const S = { session: null, timer: null, route: '', learnSeed: 1, klassRow: null };
@@ -57,12 +52,12 @@ function choiceHTML(p, c) {
 }
 function bodyHTML(p) {
   if (p.subject === 'calc') return `<div class="eq">${esc(p.prompt).replace('□', '<span class="box">□</span>')}</div>`;
-  if (p.subject === 'rule') return `<p class="ask">${esc(p.prompt)}</p><div class="seq">${p.seq.map((f, i) => (i === p.blank ? blankFigHTML() : ruleFigSVG(f))).join('<i class="arrow">›</i>')}</div>`;
-  if (p.subject === 'table') return `<p class="ask">${esc(p.prompt)}</p>
-    <div class="cmd-table">${p.table.map(t => `<div><b class="mark">${t.mark}</b><span>${esc(ROW_OPS[t.op].name)}</span></div>`).join('')}</div>
+  if (p.subject === 'rule') return `<p class="ask">${askHTML(p)}</p><div class="seq">${p.seq.map((f, i) => (i === p.blank ? blankFigHTML() : ruleFigSVG(f))).join('<i class="arrow">›</i>')}</div>`;
+  if (p.subject === 'table') return `<p class="ask">${askHTML(p)}</p>
+    <div class="cmd-table">${p.table.map(t => `<div><b class="mark">${t.mark}</b><span>${opNameH(t.op)}</span></div>`).join('')}</div>
     <div class="flow">${rowHTML(p.row)}${p.marks.map(m => `<i class="arrow">→</i><b class="mark">${m}</b>`).join('')}<i class="arrow">→</i><span class="q">?</span></div>`;
-  return `<p class="ask">${esc(p.prompt)}</p>
-    <div class="examples">${p.examples.map((e, i) => `<div class="flow ex"><small>例${i + 1}</small>${rowHTML(e.row, 26)}${e.marks.map(m => `<i class="arrow">→</i><b class="glyph">${m}</b>`).join('')}<i class="arrow">→</i>${rowHTML(e.out, 26)}</div>`).join('')}</div>
+  return `<p class="ask">${askHTML(p)}</p>
+    <div class="examples">${p.examples.map((e, i) => `<div class="flow ex"><small>${H('q.ex', { n: i + 1 })}</small>${rowHTML(e.row, 26)}${e.marks.map(m => `<i class="arrow">→</i><b class="glyph">${m}</b>`).join('')}<i class="arrow">→</i>${rowHTML(e.out, 26)}</div>`).join('')}</div>
     <div class="flow">${rowHTML(p.row)}${p.marks.map(m => `<i class="arrow">→</i><b class="glyph">${m}</b>`).join('')}<i class="arrow">→</i><span class="q">?</span></div>`;
 }
 const LABEL = ['1', '2', '3', '4', '5'];   // numbers, so they are not mistaken for the commands A–F
@@ -77,32 +72,32 @@ const mmss = sec => `${Math.floor(Math.max(0, sec) / 60)}:${String(Math.max(0, M
 /** what to do next: a subject never tried, then the one with the lowest rate (5 answers or more) */
 function recommend(p) {
   const fresh = SUBJECTS.find(s => !(p.subj[s] && p.subj[s].n));
-  if (fresh) return { s: fresh, why: 'まだ練習していない科目です。まず解き方を見てから練習しましょう。', href: `#/learn/${fresh}`, btn: '解き方を見る' };
+  if (fresh) return { s: fresh, why: H('rec.fresh'), href: `#/learn/${fresh}`, btn: H('rec.learn') };
   const tried = SUBJECTS.filter(s => p.subj[s].n >= 5).sort((a, b) => p.subj[a].ok / p.subj[a].n - p.subj[b].ok / p.subj[b].n);
   if (!tried.length) return null;
   const s = tried[0], rate = Math.round(p.subj[s].ok / p.subj[s].n * 100);
-  return rate >= 85 ? { s, why: `どの科目も正答率が高くなっています（いちばん低い${SUBJECT_NAME[s]}でも ${rate}%）。模試で時間配分を練習しましょう。`, href: `#/mock/${s}`, btn: '模試に挑戦' }
-    : { s, why: `正答率がいちばん低い科目です（${rate}%）。`, href: `#/practice/${s}`, btn: '練習する' };
+  return rate >= 85 ? { s, why: H('rec.high', { s: subjName(s), n: rate }), href: `#/mock/${s}`, btn: H('learn.toMock') }
+    : { s, why: H('rec.low', { n: rate }), href: `#/practice/${s}`, btn: H('rec.practice') };
 }
 function homeHTML() {
   const p = prog(), c = klass(), w = wrongs(), rec = recommend(p), t = activeTest();
   const best = s => { const ms = p.mocks.filter(m => m.subject === s); return ms.length ? Math.max(...ms.map(m => m.score)) : null; };
   return `<main class="wrap">
     ${t ? testBannerHTML(t) : ''}
-    <section class="hero"><h1>適性検査 練習</h1><p>CAB 形式の 4 科目を、毎回新しい問題で練習します。「解き方」で考え方をつかみ、「練習」で慣れ、「模試」で本番と同じ時間配分に挑戦しましょう。</p></section>
+    <section class="hero"><h1>${H('app.title')}</h1><p>${H('home.lead')}</p></section>
     <section class="next-row">
-      ${rec ? `<div class="card next s-${rec.s}"><span class="ic">${ICON[rec.s]}</span><div><small class="muted">次のおすすめ</small><b>${SUBJECT_NAME[rec.s]}</b><p class="muted small">${rec.why}</p></div><a class="btn primary" href="${rec.href}">${rec.btn}</a></div>` : ''}
-      <div class="card next"><span class="ic rv">↺</span><div><small class="muted">間違い直し</small><b>${w.length} 問</b><p class="muted small">${w.length ? '間違えた問題をもう一度解きます。正解すると一覧から消えます。' : '間違えた問題はここにたまります。'}</p></div>${w.length ? '<a class="btn primary" href="#/review">解き直す</a>' : ''}</div>
+      ${rec ? `<div class="card next s-${rec.s}"><span class="ic">${ICON[rec.s]}</span><div><small class="muted">${H('home.next')}</small><b>${subjNameH(rec.s)}</b><p class="muted small">${rec.why}</p></div><a class="btn primary" href="${rec.href}">${rec.btn}</a></div>` : ''}
+      <div class="card next"><span class="ic rv">↺</span><div><small class="muted">${modeH('review')}</small><b>${H('home.nq', { n: w.length })}</b><p class="muted small">${H(w.length ? 'home.reviewSub' : 'home.reviewNone')}</p></div>${w.length ? `<a class="btn primary" href="#/review">${H('home.reviewGo')}</a>` : ''}</div>
     </section>
     <section class="grid">${SUBJECTS.map(s => { const x = p.subj[s], b = best(s);
-      return `<article class="card subj s-${s}"><div class="subj-h"><span class="ic">${ICON[s]}</span><h2>${SUBJECT_NAME[s]}</h2><a class="btn small ghost" href="#/learn/${s}">解き方</a></div>
-        <p class="muted">${DESC[s]}</p>
-        <dl class="stats"><div><dt>正答率</dt><dd>${x && x.n ? Math.round(x.ok / x.n * 100) + '%' : '—'}</dd></div><div><dt>解いた数</dt><dd>${x ? x.n : 0}</dd></div><div><dt>1問の平均</dt><dd>${x && x.n ? (x.ms / x.n / 1000).toFixed(1) + '秒' : '—'}</dd></div><div><dt>模試ベスト</dt><dd>${b === null ? '—' : `${b}/${MOCK[s].n}`}</dd></div></dl>
-        <div class="btns"><a class="btn primary" href="#/practice/${s}">練習（${PRACTICE_N}問）</a><a class="btn" href="#/mock/${s}">模試 ${MOCK[s].n}問・${MOCK[s].sec / 60}分</a><a class="btn ghost" href="#/print/${s}" title="紙に印刷して解くテスト">印刷</a></div></article>`; }).join('')}</section>
-    <section class="card class-card">${c ? `<h2>クラス：${esc(c.name)}</h2><p class="muted">「${esc(c.nickname)}」として参加中です。解いた結果は先生に届きます。</p><button class="btn small" data-act="leave">クラスから抜ける</button>`
-      : backend.enabled ? `<h2>クラスに参加する</h2><p class="muted">先生から聞いたクラスコードと、名前（ニックネーム）を入れてください。</p>
-        <form class="join" data-form="join"><input name="code" placeholder="クラスコード" autocomplete="off" maxlength="8" required><input name="nick" placeholder="名前" maxlength="30" required><button class="btn primary">参加する</button></form><p class="err" id="join-err"></p>` : '<p class="muted">クラス機能はまだ設定されていません。</p>'}</section>
-    <p class="note">問題はこのアプリが自動で作るオリジナルの練習問題です。実際の試験の問題ではありません。模試の問題数と時間は、Web テストの一般的な目安です。</p>
+      return `<article class="card subj s-${s}"><div class="subj-h"><span class="ic">${ICON[s]}</span><h2>${subjNameH(s)}</h2><a class="btn small ghost" href="#/learn/${s}">${H('learn.title')}</a></div>
+        <p class="muted">${H(`desc.${s}`)}</p>
+        <dl class="stats"><div><dt>${H('st.rate')}</dt><dd>${x && x.n ? Math.round(x.ok / x.n * 100) + '%' : '—'}</dd></div><div><dt>${H('st.n')}</dt><dd>${x ? x.n : 0}</dd></div><div><dt>${H('st.avg')}</dt><dd>${x && x.n ? H('sec', { n: (x.ms / x.n / 1000).toFixed(1) }) : '—'}</dd></div><div><dt>${H('st.best')}</dt><dd>${b === null ? '—' : `${b}/${MOCK[s].n}`}</dd></div></dl>
+        <div class="btns"><a class="btn primary" href="#/practice/${s}">${H('home.practice', { n: PRACTICE_N })}</a><a class="btn" href="#/mock/${s}">${H('home.mock', { n: MOCK[s].n, m: MOCK[s].sec / 60 })}</a><a class="btn ghost" href="#/print/${s}" title="${esc(T('home.printTip'))}">${H('home.print')}</a></div></article>`; }).join('')}</section>
+    <section class="card class-card">${c ? `<h2>${H('cls.in', { name: c.name })}</h2><p class="muted">${H('cls.as', { nick: c.nickname })}</p><button class="btn small" data-act="leave">${H('cls.leave')}</button>`
+      : backend.enabled ? `<h2>${H('cls.join')}</h2><p class="muted">${H('cls.joinSub')}</p>
+        <form class="join" data-form="join"><input name="code" placeholder="${esc(T('cls.code'))}" autocomplete="off" maxlength="8" required><input name="nick" placeholder="${esc(T('cls.nick'))}" maxlength="30" required><button class="btn primary">${H('cls.joinBtn')}</button></form><p class="err" id="join-err"></p>` : `<p class="muted">${H('cls.off')}</p>`}</section>
+    <p class="note">${H('home.note')}</p>
   </main>`;
 }
 
@@ -119,41 +114,41 @@ function newSession(mode, subject, opt = {}) {
 const timed = s => s.mode === 'mock' || s.mode === 'test';
 function sessionHTML() {
   const s = S.session;
-  if (!s.items.length) return `<main class="wrap narrow"><section class="card result"><h1>間違い直し</h1><p class="muted">解き直す問題はありません。</p><a class="btn primary" href="#/">ホームへ</a></section></main>`;
+  if (!s.items.length) return `<main class="wrap narrow"><section class="card result"><h1>${modeH('review')}</h1><p class="muted">${H('rv.none')}</p><a class="btn primary" href="#/">${H('nav.home')}</a></section></main>`;
   if (s.done) return resultHTML();
   const p = s.items[s.i], left = s.end ? (s.end - Date.now()) / 1000 : null, picked = s.picks[s.i];
   return `<main class="wrap narrow">
-    <div class="bar-top">${s.mode === 'test' ? '' : '<a class="btn small" href="#/" data-act="quit">やめる</a>'}<b>${s.mode === 'review' ? `${MODE_NAME.review}・${SUBJECT_NAME[p.subject]}` : `${SUBJECT_NAME[s.subject]}・${MODE_NAME[s.mode]}`}</b>
+    <div class="bar-top">${s.mode === 'test' ? '' : `<a class="btn small" href="#/" data-act="quit">${H('ses.quit')}</a>`}<b>${s.mode === 'review' ? `${modeH('review')}・${subjNameH(p.subject)}` : `${subjNameH(s.subject)}・${modeH(s.mode)}`}</b>
       <span class="count">${s.i + 1} / ${s.items.length}</span>${s.end ? `<span class="clock ${left < 60 ? 'low' : ''}" id="clock">${mmss(left)}</span>` : ''}</div>
     <div class="progress"><i style="width:${s.i / s.items.length * 100}%"></i></div>
     <section class="card problem">${bodyHTML(p)}${choicesHTML(p, picked, s.shown)}
-      ${s.shown ? `<div class="fb ${picked === p.answer ? 'ok' : 'ng'}"><b>${picked === p.answer ? '正解！' : `不正解。正解は ${LABEL[p.answer]}`}</b><p>${esc(p.explain)}</p>
-        <div class="btns"><button class="btn primary" data-act="next">${s.i + 1 < s.items.length ? '次の問題' : '結果を見る'}</button>${picked === p.answer ? '' : `<a class="btn" href="#/learn/${p.subject}">解き方を見る</a>`}</div></div>` : ''}
-      ${timed(s) ? '<p class="muted small skip">わからない問題は飛ばせます <button class="btn small" data-act="skip">次へ</button></p>' : ''}</section>
+      ${s.shown ? `<div class="fb ${picked === p.answer ? 'ok' : 'ng'}"><b>${picked === p.answer ? H('ses.right') : H('ses.wrong', { n: LABEL[p.answer] })}</b><p>${explainHTML(p)}</p>
+        <div class="btns"><button class="btn primary" data-act="next">${H(s.i + 1 < s.items.length ? 'ses.next' : 'ses.result')}</button>${picked === p.answer ? '' : `<a class="btn" href="#/learn/${p.subject}">${H('ses.learn')}</a>`}</div></div>` : ''}
+      ${timed(s) ? `<p class="muted small skip">${H('ses.skipNote')} <button class="btn small" data-act="skip">${H('ses.skip')}</button></p>` : ''}</section>
   </main>`;
 }
 function resultHTML() {
   const s = S.session, ok = s.items.filter((p, i) => s.picks[i] === p.answer).length, answered = s.picks.filter(x => x !== undefined && x !== null).length;
   const avg = answered ? s.ms.reduce((a, b) => a + (b || 0), 0) / answered / 1000 : 0;
-  const again = s.mode === 'test' ? '' : `<a class="btn primary" href="#/${s.mode === 'review' ? 'review' : `${s.mode}/${s.subject}`}?again=${Date.now()}">${s.mode === 'review' ? '続けて解き直す' : 'もう一度'}</a>`;
-  return `<main class="wrap narrow"><section class="card result"><h1>${s.mode === 'review' ? MODE_NAME.review : `${SUBJECT_NAME[s.subject]}・${MODE_NAME[s.mode]}`}の結果</h1>
+  const again = s.mode === 'test' ? '' : `<a class="btn primary" href="#/${s.mode === 'review' ? 'review' : `${s.mode}/${s.subject}`}?again=${Date.now()}">${H(s.mode === 'review' ? 'res.moreReview' : 'res.again')}</a>`;
+  return `<main class="wrap narrow"><section class="card result"><h1>${H('res.title', { what: s.mode === 'review' ? T('mode.review') : `${subjName(s.subject)}・${T(`mode.${s.mode}`)}` })}</h1>
       <p class="score">${ok}<small> / ${s.items.length}</small></p>
-      <dl class="stats"><div><dt>答えた数</dt><dd>${answered}</dd></div><div><dt>正答率</dt><dd>${answered ? Math.round(ok / answered * 100) : 0}%</dd></div><div><dt>1問の平均</dt><dd>${avg.toFixed(1)}秒</dd></div></dl>
-      <div class="btns">${again}<a class="btn" href="#/">ホームへ</a></div></section>
-    ${timed(s) ? `<h2 class="review-h">答えの確認</h2>${s.items.map((p, i) => { const pk = s.picks[i], has = pk !== undefined && pk !== null;
-      return `<details class="card review ${pk === p.answer ? 'ok' : 'ng'}"><summary><b>${i + 1}</b><span>${!has ? '未回答' : pk === p.answer ? '○ 正解' : '× 不正解'}</span></summary>${bodyHTML(p)}${choicesHTML(p, pk, true)}<p class="explain">${esc(p.explain)}</p></details>`; }).join('')}` : ''}</main>`;
+      <dl class="stats"><div><dt>${H('res.answered')}</dt><dd>${answered}</dd></div><div><dt>${H('st.rate')}</dt><dd>${answered ? Math.round(ok / answered * 100) : 0}%</dd></div><div><dt>${H('st.avg')}</dt><dd>${H('sec', { n: avg.toFixed(1) })}</dd></div></dl>
+      <div class="btns">${again}<a class="btn" href="#/">${H('nav.home')}</a></div></section>
+    ${timed(s) ? `<h2 class="review-h">${H('res.check')}</h2>${s.items.map((p, i) => { const pk = s.picks[i], has = pk !== undefined && pk !== null;
+      return `<details class="card review ${pk === p.answer ? 'ok' : 'ng'}"><summary><b>${i + 1}</b><span>${H(!has ? 'res.none' : pk === p.answer ? 'res.ok' : 'res.ng')}</span></summary>${bodyHTML(p)}${choicesHTML(p, pk, true)}<p class="explain">${explainHTML(p)}</p></details>`; }).join('')}` : ''}</main>`;
 }
 
 /* ---------- a paper test ---------- */
 function printHTML(subject, n) {
   const seed = Math.random().toString(36).slice(2, 8), items = Array.from({ length: n }, (_, i) => makeProblem(subject, `print|${seed}|${i}`));
   return `<main class="wrap print-page">
-    <div class="no-print bar-top"><a class="btn small" href="#/">ホーム</a><b>${SUBJECT_NAME[subject]}・印刷用テスト</b>
-      <span class="seg">${[10, 20, 30].map(k => `<a class="${k === n ? 'on' : ''}" href="#/print/${subject}?n=${k}">${k}問</a>`).join('')}</span><button class="btn small" data-act="newPrint">問題を作り直す</button><button class="btn primary small" data-act="print">印刷する</button></div>
-    <section class="sheet"><header class="sheet-h"><h1>${SUBJECT_NAME[subject]} 練習テスト（${n}問）</h1><div class="sheet-name">　　年　　組　　番　名前＿＿＿＿＿＿＿＿＿＿　　得点　　／${n}</div></header>
-      <p class="sheet-rule">それぞれの問題で、正しいものを 1〜5 から 1 つ選び、番号を書きましょう。目安の時間：${Math.max(1, Math.round(MOCK[subject].sec / MOCK[subject].n * n / 60))} 分</p>
-      <ol class="sheet-qs">${items.map(p => `<li class="sheet-q">${bodyHTML(p)}<div class="choices ${p.subject} paper">${p.choices.map((c, i) => `<div class="choice"><b class="lab">${LABEL[i]}</b>${choiceHTML(p, c)}</div>`).join('')}</div><div class="ansbox">答え（　　　）</div></li>`).join('')}</ol></section>
-    <section class="sheet answers"><h2>解答・解説（${SUBJECT_NAME[subject]}・${seed}）</h2><ol>${items.map(p => `<li><b>${LABEL[p.answer]}</b>　${esc(p.explain)}</li>`).join('')}</ol></section></main>`;
+    <div class="no-print bar-top"><a class="btn small" href="#/">${H('nav.home')}</a><b>${subjNameH(subject)}・${H('pr.title')}</b>
+      <span class="seg">${[10, 20, 30].map(k => `<a class="${k === n ? 'on' : ''}" href="#/print/${subject}?n=${k}">${H('nq', { n: k })}</a>`).join('')}</span><button class="btn small" data-act="newPrint">${H('pr.new')}</button><button class="btn primary small" data-act="print">${H('pr.print')}</button></div>
+    <section class="sheet"><header class="sheet-h"><h1>${H('pr.head', { s: subjName(subject), n })}</h1><div class="sheet-name">${H('pr.name', { n })}</div></header>
+      <p class="sheet-rule">${H('pr.rule', { m: Math.max(1, Math.round(MOCK[subject].sec / MOCK[subject].n * n / 60)) })}</p>
+      <ol class="sheet-qs">${items.map(p => `<li class="sheet-q">${bodyHTML(p)}<div class="choices ${p.subject} paper">${p.choices.map((c, i) => `<div class="choice"><b class="lab">${LABEL[i]}</b>${choiceHTML(p, c)}</div>`).join('')}</div><div class="ansbox">${H('pr.ans')}</div></li>`).join('')}</ol></section>
+    <section class="sheet answers"><h2>${H('pr.key', { s: subjName(subject), id: seed })}</h2><ol>${items.map(p => `<li><b>${LABEL[p.answer]}</b>　${explainHTML(p)}</li>`).join('')}</ol></section></main>`;
 }
 
 /* ---------- the class test (started by the teacher) ---------- */
@@ -163,7 +158,7 @@ function activeTest() {
   if (!c || !t || !t.id || doneTests().includes(t.id)) return null;
   return Date.now() < new Date(t.end).getTime() ? t : null;
 }
-const testBannerHTML = t => `<div class="test-banner"><b>📝 クラスのテストが始まりました</b><span>${SUBJECT_NAME[t.subject]}・${t.n}問・${Math.round((new Date(t.end) - new Date(t.at)) / 60000)}分</span><a class="btn primary" href="#/ctest">テストを受ける</a></div>`;
+const testBannerHTML = t => `<div class="test-banner"><b>📝 ${H('ct.started')}</b><span>${H('ct.what', { s: subjName(t.subject), n: t.n, m: Math.round((new Date(t.end) - new Date(t.at)) / 60000) })}</span><a class="btn primary" href="#/ctest">${H('ct.go')}</a></div>`;
 let polling = false;
 async function pollClass() {
   const c = klass(); if (!c || !backend.enabled || polling || document.hidden) return;
@@ -236,11 +231,11 @@ document.addEventListener('click', async e => {
   if (act === 'pick') answer(+el.dataset.i);
   else if (act === 'next') next();
   else if (act === 'skip') { const s = S.session; if (s && !s.done && s.picks[s.i] === undefined) { s.picks[s.i] = null; next(); } }
-  else if (act === 'quit') { if (S.session && !S.session.done && S.session.picks.length && !confirm('途中でやめますか？')) e.preventDefault(); }
+  else if (act === 'quit') { if (S.session && !S.session.done && S.session.picks.length && !confirm(T('ses.quitAsk'))) e.preventDefault(); }
   else if (act === 'newExample') { S.learnSeed++; route(); }
   else if (act === 'newPrint') route();
   else if (act === 'print') window.print();
-  else if (act === 'leave') { if (!confirm('クラスから抜けますか？')) return; const c = klass(); try { await backend.leaveClass(c.id); } catch (err) { /* offline */ } store.set('apt.class', null); S.klassRow = null; render(); }
+  else if (act === 'leave') { if (!confirm(T('cls.leaveAsk'))) return; const c = klass(); try { await backend.leaveClass(c.id); } catch (err) { /* offline */ } store.set('apt.class', null); S.klassRow = null; render(); }
 });
 document.addEventListener('keydown', e => {   // 1–5 to answer, Enter for the next problem
   if (!S.session || S.session.done || /input|textarea/i.test(e.target.tagName)) return;
@@ -257,13 +252,31 @@ document.addEventListener('submit', async e => {
     const c = await backend.joinClass(String(f.get('code')).trim().toUpperCase(), String(f.get('nick')).trim());
     store.set('apt.class', { id: c.id, name: c.name, code: c.code, nickname: String(f.get('nick')).trim() }); render(); pollClass();
   } catch (err) {
-    errEl.textContent = { class_not_found: 'クラスコードが見つかりません。', class_closed: 'このクラスは今、参加を受け付けていません。', anon_disabled: 'クラスに接続できませんでした（先生に伝えてください）。' }[err.message] || 'クラスに接続できませんでした。通信を確かめて、もう一度試してください。';
+    errEl.textContent = T(['class_not_found', 'class_closed', 'anon_disabled', 'nickname_taken'].includes(err.message) ? `err.${err.message}` : 'err.net');
     btn.disabled = false;
   }
 });
 window.addEventListener('hashchange', route);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) pollClass(); });
-setInterval(pollClass, 5000);   // the class test reaches the students within 5 seconds
-route();
-backend.flush(); pollClass();
+/* the language: a menu in the header; the screen is drawn again (a running test keeps going) */
+function mountLang() {
+  const slot = $('#lang-slot'); if (slot) slot.innerHTML = langSelectHTML();
+  document.querySelectorAll('[data-t]').forEach(el => { el.innerHTML = H(el.dataset.t); });
+  document.title = T('app.title');
+}
+document.addEventListener('change', async e => {
+  if (!e.target.matches('[data-lang]')) return;
+  await setLang(e.target.value); mountLang();
+  const [path, query] = location.hash.replace(/^#\/?/, '').split('?'), [view, subj] = path.split('/');
+  if (S.session) render();
+  else if (view === 'learn' && SUBJECTS.includes(subj)) $('#app').innerHTML = learnHTML(subj, `${S.learnSeed}`);
+  else if (view === 'print') route();
+  else render();
+});
+(async () => {
+  await setLang(detectLang()); mountLang();
+  setInterval(pollClass, 5000);   // the class test reaches the students within 5 seconds
+  route();
+  backend.flush(); pollClass();
+})();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});

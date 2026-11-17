@@ -3,7 +3,8 @@
  * Original problems in the style of the computer-aptitude tests
  * (四則逆算・法則性・命令表・暗号). Nothing is copied from a real test.
  *
- * Every problem: { id, subject, prompt, choices: [5], answer (index), explain, ...data for drawing }
+ * Every problem: { id, subject, choices: [5], answer (index), ...data for drawing and explaining }
+ * (no words here: the texts are in i18n/<lang>.js, put together by js/text.js)
  * The same seed always gives the same problem.
  * ========================================================= */
 
@@ -27,7 +28,6 @@ function mix(R, right, wrong, key = x => JSON.stringify(x)) {
 }
 
 export const SUBJECTS = ['calc', 'rule', 'table', 'cipher'];
-export const SUBJECT_NAME = { calc: '四則逆算', rule: '法則性', table: '命令表', cipher: '暗号' };
 /* mock test: the number of problems and the time (a guide close to the web test) */
 export const MOCK = { calc: { n: 50, sec: 9 * 60 }, rule: { n: 30, sec: 12 * 60 }, table: { n: 36, sec: 15 * 60 }, cipher: { n: 30, sec: 16 * 60 } };
 
@@ -62,13 +62,11 @@ export function calcProblem(seed) {
     const near = [x + 1, x - 1, x + 2, x * 2, x / 2, x + 10, x - 10, x * 10, x / 10].filter(isNice).filter(v => Math.abs(v - x) > 1e-9);
     const m = mix(R, fmt(x), R.shuffle(near).map(fmt), k => k);
     if (!m) continue;
-    const inv = { '+': '−', '-': side === 'left' ? '＋' : '（a − 右辺）', '×': '÷', '÷': side === 'left' ? '×' : '（a ÷ 右辺）' }[op];
     const how = op === '+' ? `□ = ${fmt(lhs)} − ${fmt(a)}`
       : op === '-' ? (side === 'left' ? `□ = ${fmt(lhs)} + ${fmt(a)}` : `□ = ${fmt(a)} − ${fmt(lhs)}`)
       : op === '×' ? `□ = ${fmt(lhs)} ÷ ${fmt(a)}`
       : (side === 'left' ? `□ = ${fmt(lhs)} × ${fmt(a)}` : `□ = ${fmt(a)} ÷ ${fmt(lhs)}`);
-    return { id: `calc:${seed}`, subject: 'calc', prompt: `${left} = ${rhs}`, rhsValue: fmt(lhs), how, x: fmt(x), choices: m.choices, answer: m.answer,
-      explain: `右辺を先に計算すると ${fmt(lhs)}。${how} = ${fmt(x)}。` + (inv ? '' : '') };
+    return { id: `calc:${seed}`, subject: 'calc', prompt: `${left} = ${rhs}`, rhsValue: fmt(lhs), how, x: fmt(x), choices: m.choices, answer: m.answer };
   }
   throw new Error('calc: no problem');
 }
@@ -94,9 +92,7 @@ export function ruleProblem(seed) {
       { ...right, fill: !right.fill }, { ...right, a: right.b, b: right.a }].filter(f => f.a !== f.b);
     const m = mix(R, right, R.shuffle(variants));
     if (!m) continue;
-    const dir = d => (d === 0 ? '動かない' : `${d > 0 ? '時計回り' : '反時計回り'}に ${Math.abs(d)} つずつ進む`);
-    return { id: `rule:${seed}`, subject: 'rule', prompt: '?に入る図形はどれ？', seq, blank, da, db, fillRule, choices: m.choices, answer: m.answer,
-      explain: `●は${dir(da)}。△は${dir(db)}。真ん中は${fillRule === 'alt' ? '塗りと白が交互' : 'ずっと同じ'}。` };
+    return { id: `rule:${seed}`, subject: 'rule', seq, blank, da, db, fillRule, choices: m.choices, answer: m.answer };
   }
   throw new Error('rule: no problem');
 }
@@ -106,14 +102,14 @@ export function ruleProblem(seed) {
  * ========================================================= */
 export const SHAPES = ['circle', 'triangle', 'square', 'diamond', 'hexagon'];
 export const ROW_OPS = {
-  rev: { name: '左右を逆にする', f: r => r.slice().reverse() },
-  sw12: { name: '1番目と2番目を入れかえる', f: r => [r[1], r[0], r[2], r[3]] },
-  sw34: { name: '3番目と4番目を入れかえる', f: r => [r[0], r[1], r[3], r[2]] },
-  ends: { name: '両はしを入れかえる', f: r => [r[3], r[1], r[2], r[0]] },
-  rotL: { name: '左へ1つずらす（先頭は最後へ）', f: r => [r[1], r[2], r[3], r[0]] },
-  rotR: { name: '右へ1つずらす（最後は先頭へ）', f: r => [r[3], r[0], r[1], r[2]] },
-  inv: { name: 'すべての白黒を反対にする', f: r => r.map(x => ({ ...x, f: !x.f })) },
-  inv1: { name: '先頭の白黒を反対にする', f: r => r.map((x, i) => (i === 0 ? { ...x, f: !x.f } : x)) }
+  rev: { f: r => r.slice().reverse() },
+  sw12: { f: r => [r[1], r[0], r[2], r[3]] },
+  sw34: { f: r => [r[0], r[1], r[3], r[2]] },
+  ends: { f: r => [r[3], r[1], r[2], r[0]] },
+  rotL: { f: r => [r[1], r[2], r[3], r[0]] },
+  rotR: { f: r => [r[3], r[0], r[1], r[2]] },
+  inv: { f: r => r.map(x => ({ ...x, f: !x.f })) },
+  inv1: { f: r => r.map((x, i) => (i === 0 ? { ...x, f: !x.f } : x)) }
 };
 export const OP_KEYS = Object.keys(ROW_OPS);
 export const LETTERS = ['A', 'B', 'C', 'D', 'E', 'F'];
@@ -144,8 +140,7 @@ export function tableProblem(seed) {
     const m = mix(R, out, rowWrongs(R, row, ops, keys), rowKey);
     if (!m) continue;
     const marks = ops.map(k => table.find(x => x.op === k).mark);
-    return { id: `table:${seed}`, subject: 'table', prompt: `命令 ${marks.join(' → ')} の順に実行した結果はどれ？`, table, row, marks, ops, choices: m.choices, answer: m.answer,
-      explain: marks.map((mk, i) => `${mk}：${ROW_OPS[ops[i]].name}`).join(' → ') };
+    return { id: `table:${seed}`, subject: 'table', table, row, marks, ops, choices: m.choices, answer: m.answer };
   }
   throw new Error('table: no problem');
 }
@@ -166,9 +161,7 @@ export function cipherProblem(seed) {
     if (rowKey(out) === rowKey(row)) continue;
     const m = mix(R, out, rowWrongs(R, row, order.map(i => ops[i]), OP_KEYS), rowKey);
     if (!m) continue;
-    return { id: `cipher:${seed}`, subject: 'cipher', prompt: `例を見て記号の意味を考え、${order.map(i => glyphs[i]).join(' → ')} の結果を選んでください。`,
-      examples: ex.map(e => ({ row: e.row, marks: e.g.map(i => glyphs[i]), out: e.out })), row, marks: order.map(i => glyphs[i]), ops: order.map(i => ops[i]), meaning: glyphs.map((g, i) => ({ g, op: ops[i] })), choices: m.choices, answer: m.answer,
-      explain: [0, 1, 2].map(i => `${glyphs[i]}：${ROW_OPS[ops[i]].name}`).join('、') + '。' };
+    return { id: `cipher:${seed}`, subject: 'cipher', examples: ex.map(e => ({ row: e.row, marks: e.g.map(i => glyphs[i]), out: e.out })), row, marks: order.map(i => glyphs[i]), ops: order.map(i => ops[i]), meaning: glyphs.map((g, i) => ({ g, op: ops[i] })), choices: m.choices, answer: m.answer };
   }
   throw new Error('cipher: no problem');
 }

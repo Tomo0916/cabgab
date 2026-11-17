@@ -1,34 +1,39 @@
 /* =========================================================
  * teacher.js — the teacher's page: classes, and how each student is doing
- *   #/          my classes
- *   #/c/<id>    one class: subjects, students, mock tests
+ *   #/              my classes
+ *   #/c/<id>        one class: the class test, subjects, students, mock tests
+ *   #/c/<id>/s/<u>  one student: day by day, mock tests, class tests
  * ========================================================= */
-import { SUBJECTS, SUBJECT_NAME, MOCK } from './gen.js';
+import { SUBJECTS, MOCK } from './gen.js';
 import * as backend from './backend.js';
+import { T, H, esc, setLang, detectLang, langSelectHTML } from './i18n.js';
+import { subjName, subjNameH } from './text.js';
 
 const $ = s => document.querySelector(s);
-const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const S = { session: null, ok: false, classes: [], klass: null, members: [], att: [], period: 'all', loading: false, msg: '', draft: { subject: 'calc', n: 10, min: 3 }, openTest: null };
+const S = { session: null, ok: false, classes: [], klass: null, student: null, members: [], att: [], period: 'all', loading: false, msg: '', draft: { subject: 'calc', n: 10, min: 3 }, openTest: null };
 const fmtTime = iso => { const d = new Date(iso); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+const dayKey = iso => { const d = new Date(iso); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const since = () => { const d = new Date(); if (S.period === 'today') { d.setHours(0, 0, 0, 0); return d.getTime(); } if (S.period === 'week') return Date.now() - 7 * 86400000; return 0; };
+const nickOf = uid => (S.members.find(m => m.user_id === uid) || {}).nickname;
 
 /* ---------- numbers ---------- */
 function statsOf(rows) {
   const n = rows.length, ok = rows.filter(r => r.ok).length, ms = rows.reduce((a, r) => a + (r.ms || 0), 0);
   return { n, ok, rate: n ? ok / n : null, sec: n ? ms / n / 1000 : null };
 }
-/** mock tests: one per run → { subject, score, answered, at } */
+/** mock tests: one per run → { user_id, subject, score, answered, at } */
 function mocksOf(rows) {
   const by = new Map();
   rows.filter(r => r.mode === 'mock').forEach(r => { const k = `${r.user_id}|${r.run}`, m = by.get(k) || { user_id: r.user_id, subject: r.subject, score: 0, answered: 0, at: r.created_at }; m.answered++; if (r.ok) m.score++; if (r.created_at > m.at) m.at = r.created_at; by.set(k, m); });
   return [...by.values()];
 }
 const pctHTML = (st, subj) => (st.n ? `<span class="pct ${st.n >= 5 && st.rate < 0.5 ? 'low' : ''}" style="--sc:var(--c-${subj})"><i><b style="width:${Math.round(st.rate * 100)}%"></b></i>${Math.round(st.rate * 100)}%<small class="muted">（${st.n}）</small></span>` : '<span class="muted">—</span>');
+const secH = v => H('sec', { n: v.toFixed(1) });
 
 /* ---------- the class test: everyone at once ---------- */
 const TEST_N = [5, 10, 20, 30], TEST_MIN = [2, 3, 5, 10, 15];
 const mmss = ms => { const s = Math.max(0, Math.round(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
-/** each student's result in a test → [{ m, answered, ok, done }] */
+/** each student's result in a test → [{ m, answered, ok }] */
 function testRows(t) {
   const rows = S.att.filter(r => r.mode === 'test' && r.run === t.id);
   return S.members.map(m => { const mine = rows.filter(r => r.user_id === m.user_id); return { m, answered: mine.length, ok: mine.filter(r => r.ok).length }; });
@@ -36,85 +41,105 @@ function testRows(t) {
 function testPanelHTML(c) {
   const t = c.test, live = t && Date.now() < new Date(t.end).getTime();
   if (live) {
-    const rs = testRows(t), started = rs.filter(r => r.answered).length, finished = rs.filter(r => r.answered >= t.n).length;
-    return `<section class="card test-live"><div class="t-head"><h2>📝 実施中：${SUBJECT_NAME[t.subject]}・${t.n}問</h2><span class="clock" id="tclock" data-end="${t.end}">${mmss(new Date(t.end) - Date.now())}</span><button class="btn small" data-act="testStop">終了する</button></div>
-      <div class="classbar"><i class="done" style="width:${S.members.length ? finished / S.members.length * 100 : 0}%"></i><i class="going" style="width:${S.members.length ? (started - finished) / S.members.length * 100 : 0}%"></i></div>
-      <p class="muted small">全部答えた ${finished} 人・解いている ${started - finished} 人・まだ ${S.members.length - started} 人（5 秒ごとに更新）</p>
-      <ul class="roster">${rs.map(r => `<li class="${r.answered >= t.n ? 'done' : r.answered ? 'going' : 'none'}" title="${esc(r.m.nickname)}"><b>${esc(r.m.nickname)}</b><span>${r.answered}/${t.n}<small>（正解 ${r.ok}）</small></span><i style="width:${r.answered / t.n * 100}%"></i></li>`).join('')}</ul></section>`;
+    const rs = testRows(t), started = rs.filter(r => r.answered).length, finished = rs.filter(r => r.answered >= t.n).length, N = S.members.length || 1;
+    return `<section class="card test-live"><div class="t-head"><h2>📝 ${H('tt.live', { s: subjName(t.subject), n: t.n })}</h2><span class="clock" id="tclock" data-end="${t.end}">${mmss(new Date(t.end) - Date.now())}</span><button class="btn small" data-act="testStop">${H('tt.stop')}</button></div>
+      <div class="classbar"><i class="done" style="width:${finished / N * 100}%"></i><i class="going" style="width:${(started - finished) / N * 100}%"></i></div>
+      <p class="muted small">${H('tt.counts', { a: finished, b: started - finished, c: S.members.length - started })}</p>
+      <ul class="roster">${rs.map(r => `<li class="${r.answered >= t.n ? 'done' : r.answered ? 'going' : 'none'}" title="${esc(r.m.nickname)}"><b>${esc(r.m.nickname)}</b><span>${r.answered}/${t.n}<small>${H('tt.right', { n: r.ok })}</small></span><i style="width:${r.answered / t.n * 100}%"></i></li>`).join('')}</ul></section>`;
   }
   const d = S.draft, seg = (k, vals, label) => `<span class="seg">${vals.map(v => `<button class="${d[k] === v ? 'on' : ''}" data-act="draft" data-k="${k}" data-v="${v}">${label(v)}</button>`).join('')}</span>`;
-  return `<section class="card test-setup"><h2>📝 クラスのテスト</h2><p class="muted small">全員に同じ問題を同時に出します。生徒の画面は 5 秒以内にテストに切りかわり、時間になると自動で終わります。</p>
-    <div class="t-row"><span class="lbl">科目</span>${seg('subject', SUBJECTS, v => SUBJECT_NAME[v])}</div>
-    <div class="t-row"><span class="lbl">問題数</span>${seg('n', TEST_N, v => `${v}問`)}</div>
-    <div class="t-row"><span class="lbl">時間</span>${seg('min', TEST_MIN, v => `${v}分`)}<span class="muted small">（模試の目安なら ${Math.max(1, Math.round(MOCK[d.subject].sec / MOCK[d.subject].n * d.n / 60))} 分）</span></div>
-    <button class="btn primary" data-act="testStart">テストを始める</button></section>`;
+  return `<section class="card test-setup"><h2>📝 ${H('tt.title')}</h2><p class="muted small">${H('tt.sub')}</p>
+    <div class="t-row"><span class="lbl">${H('tt.subject')}</span>${seg('subject', SUBJECTS, v => subjNameH(v))}</div>
+    <div class="t-row"><span class="lbl">${H('tt.count')}</span>${seg('n', TEST_N, v => H('nq', { n: v }))}</div>
+    <div class="t-row"><span class="lbl">${H('tt.time')}</span>${seg('min', TEST_MIN, v => H('min', { n: v }))}<span class="muted small">${H('tt.guide', { n: Math.max(1, Math.round(MOCK[d.subject].sec / MOCK[d.subject].n * d.n / 60)) })}</span></div>
+    <button class="btn primary" data-act="testStart">${H('tt.start')}</button></section>`;
 }
 function testLogHTML(c) {
   const log = (c.test_log || []).filter(t => !(c.test && c.test.id === t.id && Date.now() < new Date(t.end).getTime()));
   if (!log.length) return '';
-  return `<section class="card" style="margin-top:14px"><h2 style="margin:0 0 8px;font-size:1.05rem">これまでのクラスのテスト</h2>${log.map(t => { const rs = testRows(t).filter(r => r.answered), avg = rs.length ? rs.reduce((a, r) => a + r.ok, 0) / rs.length : 0;
-    return `<details class="tlog" ${S.openTest === t.id ? 'open' : ''}><summary><b>${fmtTime(t.at)}</b><span>${SUBJECT_NAME[t.subject]}・${t.n}問</span><span class="muted">${rs.length} 人・平均 ${avg.toFixed(1)} 点</span></summary>
-      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>名前</th><th>正解</th><th>答えた数</th></tr></thead><tbody>${testRows(t).sort((a, b) => b.ok - a.ok).map(r => `<tr><td>${esc(r.m.nickname)}</td><td><b>${r.ok}</b> / ${t.n}</td><td>${r.answered || '<span class="muted">受けていない</span>'}</td></tr>`).join('')}</tbody></table></div></details>`; }).join('')}</section>`;
+  return `<section class="card" style="margin-top:14px"><h2 class="h2s">${H('tt.log')}</h2>${log.map(t => { const rs = testRows(t).filter(r => r.answered), avg = rs.length ? rs.reduce((a, r) => a + r.ok, 0) / rs.length : 0;
+    return `<details class="tlog" ${S.openTest === t.id ? 'open' : ''}><summary><b>${fmtTime(t.at)}</b><span>${subjNameH(t.subject)}・${H('nq', { n: t.n })}</span><span class="muted">${H('tt.logLine', { n: rs.length, a: avg.toFixed(1) })}</span></summary>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>${H('t.name')}</th><th>${H('t.right')}</th><th>${H('res.answered')}</th></tr></thead><tbody>${testRows(t).sort((a, b) => b.ok - a.ok).map(r => `<tr><td>${esc(r.m.nickname)}</td><td><b>${r.ok}</b> / ${t.n}</td><td>${r.answered || `<span class="muted">${H('tt.absent')}</span>`}</td></tr>`).join('')}</tbody></table></div></details>`; }).join('')}</section>`;
 }
 
 /* ---------- screens ---------- */
 function loginHTML() {
-  return `<main class="wrap narrow"><section class="card"><h1>先生用ページ</h1><p class="muted">SQL Practice と同じ先生用アカウント（メールアドレスとパスワード）でログインしてください。</p>
-    <form data-form="login"><label class="field"><span>メールアドレス</span><input name="email" type="email" autocomplete="username" required></label>
-    <label class="field"><span>パスワード</span><input name="password" type="password" autocomplete="current-password" required></label>
-    <button class="btn primary">ログイン</button><p class="err">${esc(S.msg)}</p></form></section></main>`;
+  return `<main class="wrap narrow"><section class="card"><h1>${H('t.title')}</h1><p class="muted">${H('t.loginSub')}</p>
+    <form data-form="login"><label class="field"><span>${H('t.email')}</span><input name="email" type="email" autocomplete="username" required></label>
+    <label class="field"><span>${H('t.password')}</span><input name="password" type="password" autocomplete="current-password" required></label>
+    <button class="btn primary">${H('t.login')}</button><p class="err">${esc(S.msg)}</p></form></section></main>`;
 }
 function classesHTML() {
-  return `<main class="wrap narrow"><div class="t-head"><h1>クラス</h1><button class="btn small" data-act="logout">ログアウト</button></div>
-    <form class="card join" data-form="create"><input name="name" placeholder="新しいクラスの名前（例：3年1組 CAB対策）" maxlength="80" required><button class="btn primary">クラスを作る</button></form>
-    <div class="list" style="margin-top:12px">${S.classes.map(c => `<a class="card" href="#/c/${c.id}"><b>${esc(c.name)}</b><span class="muted">コード <b>${esc(c.code)}</b>${c.open ? '' : '・参加停止中'}</span></a>`).join('') || '<p class="muted">まだクラスがありません。</p>'}</div>
+  return `<main class="wrap narrow"><div class="t-head"><h1>${H('t.classes')}</h1><button class="btn small" data-act="logout">${H('t.logout')}</button></div>
+    <form class="card join" data-form="create"><input name="name" placeholder="${esc(T('t.newPh'))}" maxlength="80" required><button class="btn primary">${H('t.create')}</button></form>
+    <div class="list" style="margin-top:12px">${S.classes.map(c => `<a class="card" href="#/c/${c.id}"><b>${esc(c.name)}</b><span class="muted">${H('t.codeIs')} <b>${esc(c.code)}</b>${c.open ? '' : `・${H('t.closed')}`}</span></a>`).join('') || `<p class="muted">${H('t.noClass')}</p>`}</div>
     <p class="err">${esc(S.msg)}</p></main>`;
 }
 function classHTML() {
   const c = S.klass, from = since(), rows = S.att.filter(r => new Date(r.created_at).getTime() >= from), mocks = mocksOf(rows);
-  const seg = `<span class="seg">${[['today', '今日'], ['week', '7日間'], ['all', 'すべて']].map(([k, t]) => `<button class="${S.period === k ? 'on' : ''}" data-act="period" data-v="${k}">${t}</button>`).join('')}</span>`;
+  const seg = `<span class="seg">${['today', 'week', 'all'].map(k => `<button class="${S.period === k ? 'on' : ''}" data-act="period" data-v="${k}">${H(`t.p.${k}`)}</button>`).join('')}</span>`;
   const tiles = SUBJECTS.map(s => { const st = statsOf(rows.filter(r => r.subject === s)), who = new Set(rows.filter(r => r.subject === s).map(r => r.user_id)).size;
-    return `<div class="card tile" style="--sc:var(--c-${s})"><span class="muted">${SUBJECT_NAME[s]}</span><b>${st.n ? Math.round(st.rate * 100) + '%' : '—'}</b><small class="muted">${st.n} 問・${who} 人${st.n ? `・平均 ${st.sec.toFixed(1)} 秒` : ''}</small></div>`; }).join('');
+    return `<div class="card tile" style="--sc:var(--c-${s})"><span class="muted">${subjNameH(s)}</span><b>${st.n ? Math.round(st.rate * 100) + '%' : '—'}</b><small class="muted">${H('t.tile', { n: st.n, p: who })}${st.n ? ` ・ ${H('t.avg', { s: st.sec.toFixed(1) })}` : ''}</small></div>`; }).join('');
   const body = S.members.map(m => { const mine = rows.filter(r => r.user_id === m.user_id), last = mine.length ? mine[mine.length - 1].created_at : null;
-    return `<tr><th>${esc(m.nickname)}</th>${SUBJECTS.map(s => { const st = statsOf(mine.filter(r => r.subject === s)), best = mocks.filter(x => x.user_id === m.user_id && x.subject === s);
-      return `<td>${pctHTML(st, s)}</td><td class="c">${st.n ? st.sec.toFixed(1) + '秒' : ''}</td><td class="c">${best.length ? `${Math.max(...best.map(x => x.score))}/${MOCK[s].n}` : ''}</td>`; }).join('')}
-      <td class="muted">${last ? fmtTime(last) : '—'}</td><td><button class="btn small" data-act="remove" data-u="${m.user_id}">外す</button></td></tr>`; }).join('');
-  return `<main class="wrap"><div class="t-head"><a class="btn small" href="#/">← クラス一覧</a><h1>${esc(c.name)}</h1><span>クラスコード <span class="code">${esc(c.code)}</span></span></div>
-    <div class="t-head"><span class="muted">参加</span><button class="btn small" data-act="open">${c.open ? '受付中（止める）' : '停止中（再開する）'}</button>${seg}<button class="btn small" data-act="reload">${S.loading ? '更新中…' : '更新'}</button><button class="btn small" data-act="csv">CSV で保存</button></div>
+    return `<tr><th><a href="#/c/${c.id}/s/${m.user_id}" title="${esc(T('t.detail'))}">${esc(m.nickname)}</a></th>${SUBJECTS.map(s => { const st = statsOf(mine.filter(r => r.subject === s)), best = mocks.filter(x => x.user_id === m.user_id && x.subject === s);
+      return `<td>${pctHTML(st, s)}</td><td class="c">${st.n ? secH(st.sec) : ''}</td><td class="c">${best.length ? `${Math.max(...best.map(x => x.score))}/${MOCK[s].n}` : ''}</td>`; }).join('')}
+      <td class="muted">${last ? fmtTime(last) : '—'}</td><td><button class="btn small" data-act="remove" data-u="${m.user_id}">${H('t.remove')}</button></td></tr>`; }).join('');
+  return `<main class="wrap"><div class="t-head"><a class="btn small" href="#/">← ${H('t.classes')}</a><h1>${esc(c.name)}</h1><span>${H('t.codeIs')} <span class="code">${esc(c.code)}</span></span></div>
+    <div class="t-head"><span class="muted">${H('t.joining')}</span><button class="btn small" data-act="open">${H(c.open ? 't.openOn' : 't.openOff')}</button>${seg}<button class="btn small" data-act="reload">${H(S.loading ? 't.loading' : 't.reload')}</button><button class="btn small" data-act="csv">${H('t.csv')}</button></div>
     ${testPanelHTML(c)}
     <section class="tiles">${tiles}</section>
-    <section class="card"><h2 style="margin:0 0 8px;font-size:1.05rem">生徒ごとの結果（${S.members.length} 人）</h2>
-      <div class="tbl-wrap"><table class="tbl"><thead><tr><th rowspan="2">名前</th>${SUBJECTS.map(s => `<th colspan="3" style="color:var(--c-${s})">${SUBJECT_NAME[s]}</th>`).join('')}<th rowspan="2">最後に解いた日時</th><th rowspan="2"></th></tr>
-        <tr>${SUBJECTS.map(() => '<th>正答率（問題数）</th><th>平均</th><th>模試ベスト</th>').join('')}</tr></thead>
-        <tbody>${body || `<tr><td colspan="15" class="muted">まだ生徒がいません。生徒にクラスコード <b>${esc(c.code)}</b> を伝えてください。</td></tr>`}</tbody></table></div></section>
-    <section class="card" style="margin-top:14px"><h2 style="margin:0 0 8px;font-size:1.05rem">模試の記録</h2>
-      ${mocks.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>日時</th><th>名前</th><th>科目</th><th>正解</th><th>答えた数</th></tr></thead><tbody>${mocks.sort((a, b) => (a.at < b.at ? 1 : -1)).map(x => `<tr><td>${fmtTime(x.at)}</td><td>${esc((S.members.find(m => m.user_id === x.user_id) || {}).nickname || '（抜けた生徒）')}</td><td>${SUBJECT_NAME[x.subject]}</td><td><b>${x.score}</b> / ${MOCK[x.subject].n}</td><td>${x.answered}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">この期間の模試はありません。</p>'}</section>
+    <section class="card"><h2 class="h2s">${H('t.students', { n: S.members.length })}</h2>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th rowspan="2">${H('t.name')}</th>${SUBJECTS.map(s => `<th colspan="3" style="color:var(--c-${s})">${subjNameH(s)}</th>`).join('')}<th rowspan="2">${H('t.last')}</th><th rowspan="2"></th></tr>
+        <tr>${SUBJECTS.map(() => `<th>${H('t.rateN')}</th><th>${H('st.avg')}</th><th>${H('st.best')}</th>`).join('')}</tr></thead>
+        <tbody>${body || `<tr><td colspan="15" class="muted">${H('t.noStudents', { code: c.code })}</td></tr>`}</tbody></table></div>
+      <p class="muted small">${H('t.lowNote')}</p></section>
+    <section class="card" style="margin-top:14px"><h2 class="h2s">${H('t.mocks')}</h2>
+      ${mocks.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>${H('t.when')}</th><th>${H('t.name')}</th><th>${H('tt.subject')}</th><th>${H('t.right')}</th><th>${H('res.answered')}</th></tr></thead><tbody>${mocks.sort((a, b) => (a.at < b.at ? 1 : -1)).map(x => `<tr><td>${fmtTime(x.at)}</td><td>${esc(nickOf(x.user_id) || T('t.leftStudent'))}</td><td>${subjNameH(x.subject)}</td><td><b>${x.score}</b> / ${MOCK[x.subject].n}</td><td>${x.answered}</td></tr>`).join('')}</tbody></table></div>` : `<p class="muted">${H('t.noMocks')}</p>`}</section>
     ${testLogHTML(c)}
-    <div class="t-head" style="margin-top:20px"><a class="btn small" href="../#/print/calc" target="_blank" rel="noopener">印刷用テストを作る</a><button class="btn small" data-act="clear">解答の記録をすべて消す</button><button class="btn small" data-act="delete">クラスを削除</button></div>
+    <div class="t-head" style="margin-top:20px"><a class="btn small" href="../#/print/calc" target="_blank" rel="noopener">${H('t.printLink')}</a><button class="btn small" data-act="clear">${H('t.clear')}</button><button class="btn small" data-act="delete">${H('t.delete')}</button></div>
     <p class="err">${esc(S.msg)}</p></main>`;
 }
+/* one student: each subject day by day, the mock tests, the class tests */
+function studentHTML() {
+  const c = S.klass, m = S.members.find(x => x.user_id === S.student);
+  if (!m) return `<main class="wrap narrow"><a class="btn small" href="#/c/${c.id}">← ${esc(c.name)}</a><p class="muted">${H(S.loading ? 't.loading' : 't.noStudent')}</p></main>`;
+  const mine = S.att.filter(r => r.user_id === m.user_id), days = [...new Set(mine.map(r => dayKey(r.created_at)))].sort().slice(-14);
+  const cards = SUBJECTS.map(s => { const rs = mine.filter(r => r.subject === s), st = statsOf(rs), classSt = statsOf(S.att.filter(r => r.subject === s));
+    const bars = days.map(d => { const x = statsOf(rs.filter(r => dayKey(r.created_at) === d)); return `<span class="dbar" title="${d.slice(5)}: ${x.n ? Math.round(x.rate * 100) + '% (' + x.n + ')' : '—'}"><i style="height:${x.n ? Math.max(4, x.rate * 100) : 0}%"></i><small>${d.slice(8)}</small></span>`; }).join('');
+    return `<div class="card sdet" style="--sc:var(--c-${s})"><div class="sdet-h"><b>${subjNameH(s)}</b>${pctHTML(st, s)}</div>
+      <p class="muted small">${st.n ? `${H('t.avg', { s: st.sec.toFixed(1) })}・${H('t.classAvg', { p: classSt.n ? Math.round(classSt.rate * 100) : '—' })}` : H('t.notYet')}</p>
+      ${days.length ? `<div class="dbars">${bars}</div>` : ''}</div>`; }).join('');
+  const mk = mocksOf(mine).sort((a, b) => (a.at < b.at ? 1 : -1));
+  const tests = (c.test_log || []).map(t => ({ t, r: mine.filter(x => x.mode === 'test' && x.run === t.id) })).filter(x => x.r.length);
+  return `<main class="wrap"><div class="t-head"><a class="btn small" href="#/c/${c.id}">← ${esc(c.name)}</a><h1>${esc(m.nickname)}</h1><span class="muted">${H('t.joined', { d: fmtTime(m.joined_at) })}</span></div>
+    <p class="muted small">${H('t.days')}</p>
+    <section class="sdet-grid">${cards}</section>
+    <section class="card" style="margin-top:14px"><h2 class="h2s">${H('t.mocks')}</h2>${mk.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>${H('t.when')}</th><th>${H('tt.subject')}</th><th>${H('t.right')}</th><th>${H('res.answered')}</th></tr></thead><tbody>${mk.map(x => `<tr><td>${fmtTime(x.at)}</td><td>${subjNameH(x.subject)}</td><td><b>${x.score}</b> / ${MOCK[x.subject].n}</td><td>${x.answered}</td></tr>`).join('')}</tbody></table></div>` : `<p class="muted">${H('t.noMocks')}</p>`}</section>
+    <section class="card" style="margin-top:14px"><h2 class="h2s">${H('tt.log')}</h2>${tests.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>${H('t.when')}</th><th>${H('tt.subject')}</th><th>${H('t.right')}</th></tr></thead><tbody>${tests.map(x => `<tr><td>${fmtTime(x.t.at)}</td><td>${subjNameH(x.t.subject)}</td><td><b>${x.r.filter(r => r.ok).length}</b> / ${x.t.n}</td></tr>`).join('')}</tbody></table></div>` : `<p class="muted">${H('tt.none')}</p>`}</section></main>`;
+}
 function render() {
-  $('#app').innerHTML = !backend.enabled ? '<main class="wrap narrow"><p>config.js にデータベースの接続先が設定されていません。</p></main>'
-    : !S.session ? loginHTML() : !S.ok ? `<main class="wrap narrow"><section class="card"><h1>先生として登録されていません</h1><p class="muted">このメールアドレスは先生の一覧（teachers）にありません。</p><button class="btn" data-act="logout">ログアウト</button></section></main>`
-    : S.klass ? classHTML() : classesHTML();
+  $('#app').innerHTML = !backend.enabled ? `<main class="wrap narrow"><p>${H('t.noConfig')}</p></main>`
+    : !S.session ? loginHTML() : !S.ok ? `<main class="wrap narrow"><section class="card"><h1>${H('t.notTeacher')}</h1><p class="muted">${H('t.notTeacherSub')}</p><button class="btn" data-act="logout">${H('t.logout')}</button></section></main>`
+    : S.klass ? (S.student ? studentHTML() : classHTML()) : classesHTML();
 }
 
 /* ---------- loading ---------- */
 async function loadClass(id) {
   S.loading = true;
   try { const [ms, at] = await Promise.all([backend.members(id), backend.attempts(id)]); S.members = ms; S.att = at; S.msg = ''; }
-  catch (e) { S.msg = '読み込めませんでした。'; }
+  catch (e) { S.msg = T('t.loadErr'); }
   S.loading = false; render();
 }
 async function route() {
-  const [, view, id] = location.hash.replace(/^#/, '').split('/');
+  const [, view, id, sub, uid] = location.hash.replace(/^#/, '').split('/');
   if (!S.session || !S.ok) return render();
   if (view === 'c' && id) {
     if (!S.classes.length) S.classes = await backend.myClasses();
-    S.klass = S.classes.find(c => c.id === id) || null;
-    if (S.klass) { S.members = []; S.att = []; render(); return loadClass(id); }
+    const same = S.klass && S.klass.id === id;
+    S.klass = S.classes.find(c => c.id === id) || null; S.student = sub === 's' ? uid : null;
+    if (S.klass) { if (same) return render(); S.members = []; S.att = []; render(); return loadClass(id); }
   }
-  S.klass = null; S.classes = await backend.myClasses().catch(() => []); render();
+  S.klass = null; S.student = null; S.classes = await backend.myClasses().catch(() => []); render();
 }
 let tick = 0;
 setInterval(() => {   // the numbers keep up during a lesson: every 5 seconds while a test runs, otherwise every 30
@@ -128,7 +153,7 @@ setInterval(() => {   // the numbers keep up during a lesson: every 5 seconds wh
 /* ---------- actions ---------- */
 function csv() {
   const rows = S.att.filter(r => new Date(r.created_at).getTime() >= since()), mocks = mocksOf(rows);
-  const head = ['名前', ...SUBJECTS.flatMap(s => [`${SUBJECT_NAME[s]} 問題数`, `${SUBJECT_NAME[s]} 正答率`, `${SUBJECT_NAME[s]} 平均秒`, `${SUBJECT_NAME[s]} 模試ベスト`])];
+  const head = [T('t.name'), ...SUBJECTS.flatMap(s => [`${subjName(s)} ${T('st.n')}`, `${subjName(s)} ${T('st.rate')}`, `${subjName(s)} ${T('t.csvSec')}`, `${subjName(s)} ${T('st.best')}`])];
   const cell = v => { let t = String(v == null ? '' : v); if (/^[=+\-@]/.test(t)) t = `'${t}`; return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
   const lines = [head, ...S.members.map(m => [m.nickname, ...SUBJECTS.flatMap(s => { const st = statsOf(rows.filter(r => r.user_id === m.user_id && r.subject === s)), b = mocks.filter(x => x.user_id === m.user_id && x.subject === s);
     return [st.n, st.n ? Math.round(st.rate * 100) : '', st.n ? st.sec.toFixed(1) : '', b.length ? Math.max(...b.map(x => x.score)) : '']; })])];
@@ -142,6 +167,8 @@ document.addEventListener('click', async e => {
   try {
     if (act === 'logout') { await backend.signOut(); S.session = null; S.ok = false; location.hash = '#/'; render(); }
     else if (act === 'period') { S.period = el.dataset.v; render(); }
+    else if (act === 'reload') loadClass(c.id);
+    else if (act === 'csv') csv();
     else if (act === 'draft') { const k = el.dataset.k; S.draft[k] = k === 'subject' ? el.dataset.v : +el.dataset.v; render(); }
     else if (act === 'testStart') {
       const now = await backend.serverNow(), d = S.draft, at = now + 3000;
@@ -149,17 +176,15 @@ document.addEventListener('click', async e => {
       S.klass = await backend.updateClass(c.id, { test: t, test_log: [t, ...(c.test_log || [])].slice(0, 30) }); S.classes = S.classes.map(x => (x.id === c.id ? S.klass : x)); render();
     }
     else if (act === 'testStop') {
-      if (!confirm('テストを終了しますか？生徒の画面もその場で終わります。')) return;
+      if (!confirm(T('tt.stopAsk'))) return;
       const t = c.test, done = Object.assign({}, t, { end: new Date().toISOString() });
       S.klass = await backend.updateClass(c.id, { test: done, test_log: (c.test_log || []).map(x => (x.id === t.id ? done : x)) }); S.openTest = t.id; S.classes = S.classes.map(x => (x.id === c.id ? S.klass : x)); loadClass(c.id);
     }
-    else if (act === 'reload') loadClass(c.id);
-    else if (act === 'csv') csv();
     else if (act === 'open') { S.klass = await backend.updateClass(c.id, { open: !c.open }); S.classes = S.classes.map(x => (x.id === c.id ? S.klass : x)); render(); }
-    else if (act === 'remove') { const m = S.members.find(x => x.user_id === el.dataset.u); if (m && confirm(`${m.nickname} をクラスから外しますか？（記録は残ります）`)) { await backend.removeMember(c.id, m.user_id); loadClass(c.id); } }
-    else if (act === 'clear') { if (confirm('このクラスの解答の記録をすべて消しますか？元に戻せません。')) { await backend.clearAttempts(c.id); loadClass(c.id); } }
-    else if (act === 'delete') { if (prompt(`クラスを削除すると、生徒と記録もすべて消えます。削除するにはクラスコード ${c.code} を入力してください。`) === c.code) { await backend.deleteClass(c.id); S.classes = []; location.hash = '#/'; } }
-  } catch (err) { S.msg = '操作できませんでした。もう一度試してください。'; render(); }
+    else if (act === 'remove') { const m = S.members.find(x => x.user_id === el.dataset.u); if (m && confirm(T('t.removeAsk', { name: m.nickname }))) { await backend.removeMember(c.id, m.user_id); loadClass(c.id); } }
+    else if (act === 'clear') { if (confirm(T('t.clearAsk'))) { await backend.clearAttempts(c.id); loadClass(c.id); } }
+    else if (act === 'delete') { if (prompt(T('t.deleteAsk', { code: c.code })) === c.code) { await backend.deleteClass(c.id); S.classes = []; location.hash = '#/'; } }
+  } catch (err) { S.msg = T('t.actErr'); render(); }
 });
 document.addEventListener('submit', async e => {
   e.preventDefault();
@@ -167,8 +192,14 @@ document.addEventListener('submit', async e => {
   try {
     if (form === 'login') { await backend.signIn(String(f.get('email')).trim(), String(f.get('password'))); await start(); }
     else if (form === 'create') { const c = await backend.createClass(String(f.get('name')).trim()); S.classes = []; location.hash = `#/c/${c.id}`; }
-  } catch (err) { S.msg = form === 'login' ? 'ログインできませんでした。メールアドレスとパスワードを確かめてください。' : err.message === 'not_teacher' ? '先生として登録されていません。' : 'クラスを作れませんでした。'; render(); }
+  } catch (err) { S.msg = T(form === 'login' ? 't.loginErr' : err.message === 'not_teacher' ? 't.notTeacher' : 't.createErr'); render(); }
 });
+function mountLang() {
+  const slot = $('#lang-slot'); if (slot) slot.innerHTML = langSelectHTML();
+  document.querySelectorAll('[data-t]').forEach(el => { el.innerHTML = H(el.dataset.t); });
+  document.title = `${T('app.title')} · ${T('t.title')}`;
+}
+document.addEventListener('change', async e => { if (e.target.matches('[data-lang]')) { await setLang(e.target.value); mountLang(); render(); } });
 async function start() {
   if (!backend.enabled) return render();
   S.session = await backend.teacherSession().catch(() => null);
@@ -176,4 +207,4 @@ async function start() {
   S.msg = ''; route();
 }
 window.addEventListener('hashchange', route);
-start();
+(async () => { await setLang(detectLang()); mountLang(); start(); })();
